@@ -25,6 +25,7 @@ uniform float2 uv_offset;\
 uniform float2 uv_scale;\
 uniform float2 uv_pixel_interval;\
 uniform float rand_f;\
+uniform float volume;\
 uniform float2 uv_size;\
 \
 sampler_state textureSampler{\
@@ -98,7 +99,8 @@ struct shader_filter_data
 	gs_eparam_t *param_uv_pixel_interval;
 	gs_eparam_t *param_elapsed_time;
 	gs_eparam_t *param_rand_f;
-	gs_eparam_t *param_uv_size;	
+	gs_eparam_t *param_volume;
+	gs_eparam_t *param_uv_size;
 
 	int expand_left;
 	int expand_right;
@@ -109,12 +111,15 @@ struct shader_filter_data
 	int total_height;
 	//bool use_sliders;
 
+	obs_volmeter_t *volmeter;
+
 	struct vec2 uv_offset;
 	struct vec2 uv_scale;
 	struct vec2 uv_pixel_interval;
 	struct vec2 uv_size;
 	float elapsed_time;
 	float rand_f;
+	float volume;
 
 	DARRAY(struct effect_param_data) stored_param_list;
 };
@@ -148,6 +153,7 @@ static void shader_filter_reload_effect(struct shader_filter_data *filter)
 	filter->param_uv_pixel_interval = NULL;
 	filter->param_uv_scale = NULL;
 	filter->param_rand_f = NULL;
+	filter->param_volume = NULL;
 	filter->param_uv_size = NULL;
 
 	if (filter->effect != NULL)
@@ -243,6 +249,10 @@ static void shader_filter_reload_effect(struct shader_filter_data *filter)
 		{
 			filter->param_rand_f = param;
 		}
+		else if (strcmp(info.name, "volume") == 0)
+		{
+			filter->param_volume = param;
+		}
 		else if (strcmp(info.name, "uv_size") == 0)
 		{
 			filter->param_uv_size = param;
@@ -267,6 +277,23 @@ static const char *shader_filter_get_name(void *unused)
 	return obs_module_text("ShaderFilter");
 }
 
+void volmeter_callback(void *data,
+	const float magnitude[MAX_AUDIO_CHANNELS],
+	const float peak[MAX_AUDIO_CHANNELS],
+	const float inputPeak[MAX_AUDIO_CHANNELS])
+{
+	struct shader_filter_data *filter = data;
+
+	int channels = obs_volmeter_get_nr_channels(filter->volmeter);
+	if(channels != 0) {
+		filter->volume = 0;
+		for (int channel = 0; channel < channels; channel++) {
+			filter->volume += peak[channel];
+		}
+		filter->volume /= channels;
+	}
+}
+
 static void *shader_filter_create(obs_data_t *settings, obs_source_t *source)
 {
 	UNUSED_PARAMETER(source);
@@ -280,6 +307,12 @@ static void *shader_filter_create(obs_data_t *settings, obs_source_t *source)
 	filter->last_from_file = obs_data_get_bool(settings, "from_file");
 	//filter->use_sliders = obs_data_get_bool(settings, "use_sliders");
 	da_init(filter->stored_param_list);
+	filter->volmeter = obs_volmeter_create(OBS_FADER_LOG);
+	obs_volmeter_add_callback(filter->volmeter, volmeter_callback, filter);
+
+	obs_source_t *desktop_source = obs_get_output_source(1 /* desktop source */);
+	obs_volmeter_attach_source(filter->volmeter, desktop_source);
+	obs_source_release(desktop_source);
 
 	obs_source_update(source, settings);
 
@@ -292,6 +325,8 @@ static void shader_filter_destroy(void *data)
 
 	dstr_free(&filter->last_path);
 	da_free(filter->stored_param_list);
+	obs_volmeter_remove_callback(filter->volmeter, volmeter_callback, filter);
+	obs_volmeter_destroy(filter->volmeter);
 
 	bfree(filter);
 }
@@ -611,6 +646,10 @@ static void shader_filter_render(void *data, gs_effect_t *effect)
 		if (filter->param_rand_f != NULL)
 		{
 			gs_effect_set_float(filter->param_rand_f, filter->rand_f);
+		}
+		if (filter->param_volume != NULL)
+		{
+			gs_effect_set_float(filter->param_volume, filter->volume);
 		}
 		if (filter->param_uv_size != NULL)
 		{
